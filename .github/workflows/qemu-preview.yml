@@ -23,8 +23,10 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 clang lld llvm zstd python3-pip imagemagick >/dev/null
+          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 clang lld llvm zstd python3-pip imagemagick cmake >/dev/null
           pip install --break-system-packages -q remotezip
+          sudo apt-get install -y -qq lzfse >/dev/null 2>&1 || { git clone -q --depth 1 https://github.com/lzfse/lzfse /tmp/lzfse && cmake -S /tmp/lzfse -B /tmp/lzfse/b -DCMAKE_BUILD_TYPE=Release >/dev/null && cmake --build /tmp/lzfse/b -j4 >/dev/null && sudo cmake --install /tmp/lzfse/b >/dev/null; }
+          command -v lzfse
           qemu-system-aarch64 --version | head -1
       - name: Common tree
         run: git clone -q --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hk
