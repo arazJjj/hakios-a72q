@@ -1,0 +1,19 @@
+# Copy the private boot-identity release files onto branch identity-files so they can be fetched with git.
+name: identity-to-branch
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  copy:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          test "$(gh api repos/${{ github.repository }} --jq .private)" = true
+          mkdir out && cd out
+          gh release download boot-identity-84ee567 -R ${{ github.repository }}
+          git init -q -b identity-files
+          git add -A
+          git -c user.name=ci -c user.email=ci@noreply commit -qm "boot-identity-84ee567 files"
+          git push -f https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git identity-files
