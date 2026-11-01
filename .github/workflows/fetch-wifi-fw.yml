@@ -32,7 +32,7 @@ jobs:
           asgard checkupdate $MODEL $CSC | tee version.txt
           asgard download $MODEL $CSC --list-entries || true
           asgard download $MODEL $CSC --archive 'CP*' --list-entries || true
-      - name: Modem image (CP: modem.bin, the NON-HLOS FAT image that holds wlanmdsp)
+      - name: "Modem image from CP (modem.bin, the NON-HLOS FAT image that holds wlanmdsp)"
         run: |
           mkdir -p cp out/modem
           asgard download $MODEL $CSC --archive 'CP*' --file modem.bin.lz4 -o cp --quiet || \
