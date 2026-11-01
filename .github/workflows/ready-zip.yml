@@ -1,0 +1,17 @@
+# Attach dist/ (the ready-to-run folder zip and join-ramdisk.bat) to the private release ready-a72q-f065764.
+name: ready-zip
+on:
+  push:
+    branches: [main]
+    paths: [dist/**]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  up:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release upload ready-a72q-f065764 dist/hakios-a72q-ready.zip dist/join-ramdisk.bat --clobber -R ${{ github.repository }}
