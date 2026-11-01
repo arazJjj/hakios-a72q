@@ -13,6 +13,10 @@ on:
       build:
         description: "iOS build (20F66 = 16.5)"
         default: "20F66"
+      fw_tag:
+        description: "Private release with the A72 modem/Wi-Fi firmware to stage in /fw (empty: none)"
+        default: "fw-A725FXXSBFYC1"
+        required: false
 
 permissions:
   contents: write
@@ -36,9 +40,18 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: A72 firmware from the private release
+        if: ${{ inputs.fw_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.fw_tag }}" -p a72q-wifi-fw.tar.gz -D "${{ runner.temp }}" -R ${{ github.repository }}
+          ls -la "${{ runner.temp }}/a72q-wifi-fw.tar.gz"
+
       - name: Build
         env:
           WORK: ${{ runner.temp }}/hakios
+          A72_FW_TGZ: ${{ inputs.fw_tag != '' && format('{0}/a72q-wifi-fw.tar.gz', runner.temp) || '' }}
         run: |
           sed -i "s/tools\/fetch-ipsw.sh iPhone10,3 20F66/tools\/fetch-ipsw.sh ${{ inputs.device }} ${{ inputs.build }}/" codespace-build.sh
           bash codespace-build.sh

@@ -30,8 +30,28 @@ IPSW="$(ls "$OUT_IPSW"/*.ipsw | head -1)"
 echo "== unpack (about 5 min)"
 sysimage/unpack.sh "$IPSW"
 
+# A72 modem + Wi-Fi firmware (Samsung's own, from the private fw-* release; see fetch-wifi-fw.yml).
+# Staged into system.apfs /fw. It only sits there: an A72 MPSS/Wi-Fi driver still has to load it.
+MODEM_FLAG=
+if [ -n "${A72_FW_TGZ:-}" ] && [ -f "$A72_FW_TGZ" ]; then
+	echo "== A72 firmware into system.apfs /fw"
+	rm -rf "$WORK/fw-modem" /tmp/a72fw && mkdir -p "$WORK/fw-modem/image" /tmp/a72fw
+	tar -xzf "$A72_FW_TGZ" -C /tmp/a72fw
+	cp -R /tmp/a72fw/modem/image/. "$WORK/fw-modem/image/"
+	mv "$WORK/fw-modem/image/modem.mdt" "$WORK/fw-modem/image"/modem.b[0-9][0-9] "$WORK/fw-modem/"
+	cp /tmp/a72fw/vendor/firmware/wlanmdsp.mbn "$WORK/fw-modem/image/"
+	cp /tmp/a72fw/vendor/firmware/wlan/qca_cld/bdwlan.bin /tmp/a72fw/vendor/firmware/wlan/qca_cld/regdb.bin \
+	   /tmp/a72fw/vendor/firmware/wlan/qca_cld/WCNSS_qcom_cfg.ini "$WORK/fw-modem/image/"
+	# build.sh checks modem segments against the Redwood (SM7325) device tree: not this phone's. Skip that check.
+	sed -i 's#^\(\t*\)\.\./devices/redwood/tools/modem_firmware.py .*\\$#\1true \\#' userland/build.sh
+	sed -i 's#^\(\t*\)--node /soc/qcom,mss@4080000 >/dev/null#\1>/dev/null#' userland/build.sh
+	grep -n -A2 "MODEM=1 needs" userland/build.sh || true
+	ls -la "$WORK/fw-modem" "$WORK/fw-modem/image"
+	MODEM_FLAG=1
+fi
+
 echo "== build root.apfs + system.apfs (about 4 min)"
-PREBUILT=1 REST=1 SYSTEM=1 userland/build.sh
+MODEM=$MODEM_FLAG PREBUILT=1 REST=1 SYSTEM=1 userland/build.sh
 
 echo "== free the disk: IPSW removed"
 rm -f "$IPSW"
