@@ -49,6 +49,7 @@ jobs:
         if: failure()
         run: |
           grep -nE "error:|Error [0-9]|\*\*\*|not found|No such file" kernel-build.log | head -120 || true
+          for f in hk/xnu-deps/*.log; do echo "=== $f"; grep -nE "error|Error|not found|No such|undefined|fatal" "$f" | head -60; tail -40 "$f"; done || true
       - name: Publish
         run: |
           cd hk
