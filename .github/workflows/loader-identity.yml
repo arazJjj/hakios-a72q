@@ -1,0 +1,53 @@
+# a72q boot.img whose HakiOS loader carries the iPhone10,3 identity (Darwin needs it), built from the
+# DeviceTree inside Apple's IPSW (fetched by HTTP range). Apple-derived: published to a PRIVATE release only.
+name: loader-identity
+on:
+  workflow_dispatch:
+    inputs:
+      boot: { description: "boot.img in the repo to take U-Boot + payload from", default: "device/hakios/hakios-a72q-boot.img" }
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions: { contents: write }
+    env: { GH_TOKEN: "${{ github.token }}" }
+    steps:
+      - name: Refuse on a public repository
+        run: |
+          vis=$(gh api repos/${{ github.repository }} --jq .visibility)
+          [ "$vis" = private ] || { echo "repository is $vis"; exit 1; }
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld llvm cmake >/dev/null
+          pip install --break-system-packages -q remotezip
+          git clone -q --depth 1 https://github.com/lzfse/lzfse /tmp/lzfse && cmake -S /tmp/lzfse -B /tmp/lzfse/b -DCMAKE_BUILD_TYPE=Release >/dev/null && cmake --build /tmp/lzfse/b -j4 >/dev/null && sudo cmake --install /tmp/lzfse/b >/dev/null
+          command -v lld-link || sudo ln -s "$(ls /usr/bin/lld-link-* | head -1)" /usr/local/bin/lld-link
+      - name: Loader (common tree + a72q platform patch + iPhone10,3 identity)
+        run: |
+          git clone -q --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hk
+          cd hk
+          git apply -v ../patches/hakios-loader-a72q-resflash.diff
+          grep -c platform_a72q xnuloader/loader.c
+          url=$(curl -s https://api.ipsw.me/v4/ipsw/iPhone10,3/20F66 | python3 -c 'import json,sys;print(json.load(sys.stdin)["url"])')
+          python3 - "$url" <<'PY'
+          import sys, remotezip
+          with remotezip.RemoteZip(sys.argv[1]) as z:
+              name = [n for n in z.namelist() if n.endswith("DeviceTree.d22ap.im4p")][0]
+              open("sysimage/DeviceTree.d22ap.im4p", "wb").write(z.read(name))
+          PY
+          xnuloader/mkidentity.sh sysimage/DeviceTree.d22ap.im4p
+          grep -q placeholder xnuloader/identity.h && { echo "identity is a placeholder"; exit 1; } || true
+          xnuloader/build.sh
+      - name: boot.img with that loader
+        run: |
+          mkdir out
+          python3 tools/swap-loader.py "${{ inputs.boot }}" hk/xnuloader/loader.efi out/boot.img device/hakios/devices/a72q/prebuilt/mkbootimg.py
+          cp hk/xnuloader/loader.efi out/loader.efi
+          bash tools/odin-pack.sh out/boot.img out/AP_hakios_a72q_identity.tar.md5 || true
+          (cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+      - name: Private release
+        run: |
+          tag=boot-identity-${GITHUB_SHA::7}
+          gh release create "$tag" out/* -R ${{ github.repository }} --title "a72q boot.img with iPhone10,3 identity loader (${GITHUB_SHA::7})" \
+            --notes "Private (Apple-derived identity). Put loader.efi in hakios/xnuloader/. boot.img: fastboot boot boot.img, or flash to BOOT." 
