@@ -39,6 +39,7 @@ jobs:
           git clone -q --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hk
           rm -rf hk/devices/a72q && cp -a device/hakios/devices/a72q hk/devices/a72q
           cp hk/devices/a72q/overlay/drivers/gpu/hakios.adreno.c hk/drivers/gpu/hakios.adreno.c
+          cp hk/devices/a72q/overlay/drivers/modem/hakios.mpss.c hk/drivers/modem/hakios.mpss.c
           # the config check finds boot-argument readers only under the common drivers/: show it the device's touch driver
           mkdir -p hk/drivers/input/a72q-scan-only && cp device/hakios/devices/a72q/drivers/input/hakios.stmfts.c hk/drivers/input/a72q-scan-only/
           cd hk && git add -A && git log -1 --format="common tree %h %cs"   # added: the config check scans tracked files
