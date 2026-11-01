@@ -1,0 +1,47 @@
+# Pull the A72's GPU (Adreno 618) firmware out of Samsung's stock firmware into a PRIVATE release.
+name: fetch-gpu-fw
+on:
+  workflow_dispatch:
+    inputs:
+      csc:
+        description: "CSC (INS and XSG answer for SM-A725F)"
+        default: "INS"
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MODEL: SM-A725F
+      CSC: ${{ inputs.csc }}
+    steps:
+      - name: Refuse on a public repository
+        run: |
+          vis=$(gh api repos/${{ github.repository }} --jq .visibility)
+          [ "$vis" = private ] || { echo "repository is $vis"; exit 1; }
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq erofs-utils e2fsprogs >/dev/null
+          python3 -m pip install -q asgard-fus
+          asgard checkupdate $MODEL $CSC | tee version.txt
+      - name: Vendor GPU files
+        run: |
+          mkdir -p ap out
+          asgard download $MODEL $CSC --archive 'AP*' --partition vendor -o ap --quiet
+          img=ap/vendor.img
+          if fsck.erofs "$img" >/dev/null 2>&1; then fsck.erofs --extract=ap/root "$img"; else mkdir -p ap/root && debugfs -R "rdump / ap/root" "$img" 2>/dev/null; fi
+          cd ap/root
+          find . \( -iname 'a6*' -o -iname 'a5*' -o -iname '*zap*' -o -iname '*gmu*' -o -iname '*sqe*' -o -iname '*adreno*' \) \
+            -path './firmware/*' | tee ../../out/LIST.txt
+          ls -la firmware | head -200 > ../../out/firmware-dir.txt
+          tar -cf - $(cat ../../out/LIST.txt) | tar -xf - -C ../../out
+          grep -rl --include='*.xml' --include='*.conf' -i adreno etc 2>/dev/null | head >> ../../out/LIST.txt || true
+      - name: Publish
+        run: |
+          cp version.txt out/
+          (cd out && find . -type f | sort > FILES.txt && tar -czf ../a72q-gpu-fw.tar.gz .)
+          tag=gpu-fw-$(cut -d/ -f1 version.txt | tr -d '\n')
+          gh release create "$tag" a72q-gpu-fw.tar.gz out/FILES.txt out/firmware-dir.txt -R ${{ github.repository }} \
+            --title "A72 GPU firmware ($(cat version.txt))" --notes "Adreno 618 firmware from stock $MODEL $CSC vendor. Keep private."
