@@ -1,0 +1,71 @@
+# Pull the A72's Wi-Fi (and modem) firmware out of Samsung's own stock firmware, with no rooted phone.
+# The files are Qualcomm's and Samsung's, signed: they go to a PRIVATE release only, never into the repository.
+name: fetch-wifi-fw
+on:
+  workflow_dispatch:
+    inputs:
+      csc:
+        description: "CSC to download (INS and XSG answer for SM-A725F)"
+        default: "INS"
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MODEL: SM-A725F
+      CSC: ${{ inputs.csc }}
+    steps:
+      - name: Refuse on a public repository
+        run: |
+          vis=$(gh api repos/${{ github.repository }} --jq .visibility)
+          [ "$vis" = private ] || { echo "repository is $vis: firmware files must stay private"; exit 1; }
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mtools erofs-utils e2fsprogs lz4 >/dev/null
+          python3 -m pip install -q asgard-fus
+          df -h /
+      - name: Which firmware
+        run: |
+          asgard checkupdate $MODEL $CSC | tee version.txt
+          asgard download $MODEL $CSC --list-entries || true
+          asgard download $MODEL $CSC --archive 'CP*' --list-entries || true
+      - name: Modem image (CP: modem.bin, the NON-HLOS FAT image that holds wlanmdsp)
+        run: |
+          mkdir -p cp out/modem
+          asgard download $MODEL $CSC --archive 'CP*' --file modem.bin.lz4 -o cp --quiet || \
+            asgard download $MODEL $CSC --archive 'CP*' --file modem.bin -o cp --quiet
+          ls -la cp
+          img=$(ls cp/modem.bin* | head -1)
+          mdir -i "$img" ::/ || true
+          mcopy -s -n -i "$img" ::/image out/modem/
+          ls -la out/modem/image | head -80
+      - name: Vendor Wi-Fi files (board data, config)
+        run: |
+          mkdir -p ap out/vendor
+          asgard download $MODEL $CSC --archive 'AP*' --list-partitions || true
+          asgard download $MODEL $CSC --archive 'AP*' --partition vendor -o ap --quiet || \
+            asgard download $MODEL $CSC --archive 'AP*' --partition vendor_a -o ap --quiet
+          img=$(ls ap/vendor*.img | head -1)
+          if fsck.erofs "$img" >/dev/null 2>&1; then
+            fsck.erofs --extract=ap/vendor-root "$img"
+          else
+            mkdir -p ap/vendor-root && debugfs -R "rdump / ap/vendor-root" "$img" 2>/dev/null
+          fi
+          cd ap/vendor-root
+          find . -ipath '*wlan*' -o -iname 'bdwlan*' -o -iname 'wlanmdsp*' -o -iname 'WCNSS*' -o -ipath '*qca_cld*' \
+            -o -iname 'regdb*' -o -iname '*.bin' -ipath '*wifi*' | tee ../../out/vendor-list.txt
+          tar -cf - $(cat ../../out/vendor-list.txt) 2>/dev/null | tar -xf - -C ../../out/vendor
+          rm -rf ../vendor*.img
+      - name: Publish (private release)
+        run: |
+          cp version.txt out/
+          (cd out && find . -type f | sort > FILES.txt && tar -czf ../a72q-wifi-fw.tar.gz .)
+          sha256sum a72q-wifi-fw.tar.gz > SHA256SUMS
+          tag=fw-$(cut -d/ -f1 version.txt | tr -d '\n')
+          gh release create "$tag" a72q-wifi-fw.tar.gz SHA256SUMS out/FILES.txt -R ${{ github.repository }} \
+            --title "A72 Wi-Fi/modem firmware ($(cat version.txt))" \
+            --notes "Extracted from Samsung's stock $MODEL $CSC firmware. Qualcomm/Samsung signed files: keep private." || \
+          gh release upload "$tag" a72q-wifi-fw.tar.gz SHA256SUMS out/FILES.txt --clobber -R ${{ github.repository }}
