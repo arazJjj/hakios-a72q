@@ -1,0 +1,33 @@
+# HakiOS a72q: publish boot.img (U-Boot + HakiOS loader, no Apple files) and its Odin AP file as a release.
+name: Release boot.img
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - device/hakios/hakios-a72q-boot.img
+      - .github/workflows/release-boot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack
+        run: |
+          mkdir out
+          cp device/hakios/hakios-a72q-boot.img out/boot.img
+          bash tools/odin-pack.sh device/hakios/hakios-a72q-boot.img out/AP_hakios_a72q.tar.md5
+          ( cd out && sha256sum * > SHA256SUMS )
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="boot-${GITHUB_SHA::7}"
+          gh release create "$TAG" out/* --latest \
+            --title "HakiOS a72q boot.img (${GITHUB_SHA::7})" \
+            --notes "fastboot boot boot.img (RAM only), or Odin: AP = AP_hakios_a72q.tar.md5. No Apple files inside."
