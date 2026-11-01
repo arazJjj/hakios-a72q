@@ -3,4 +3,5 @@
 driver STMFTS
 	file    bsd/dev/hakios.stmfts.c
 	help    the Galaxy A72's touch screen: an STMicro FTS5CU56A on I2C (QUP wrap 1 engine 1, address 0x49),
-	help    polled (touchscreen=1). Written, not yet seen working on a phone
+	help    polled (touchscreen=1): turns on its clocks, pins and supplies (LDO10A, LDO7C through RPMh) itself.
+	help    v2, not yet seen working on a phone
