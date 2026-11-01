@@ -1,0 +1,51 @@
+# Samsung's own stock boot.img for SM-A725F, packed for Odin (AP slot): the way back to Android after
+# flashing HakiOS's boot with Odin. Signed Samsung file: PRIVATE release only.
+name: stock-boot
+on:
+  workflow_dispatch:
+    inputs:
+      csc:
+        description: "CSC"
+        default: "INS"
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MODEL: SM-A725F
+      CSC: ${{ inputs.csc }}
+    steps:
+      - name: Refuse on a public repository
+        run: |
+          vis=$(gh api repos/${{ github.repository }} --jq .visibility)
+          [ "$vis" = private ] || { echo "repository is $vis"; exit 1; }
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lz4 >/dev/null
+          python3 -m pip install -q asgard-fus
+      - name: Stock boot.img
+        run: |
+          asgard checkupdate $MODEL $CSC | tee version.txt
+          mkdir ap out
+          asgard download $MODEL $CSC --archive 'AP*' --partition boot -o ap --quiet || \
+            asgard download $MODEL $CSC --archive 'AP*' --file boot.img.lz4 -o ap --quiet
+          ls -la ap
+          f=$(ls ap/boot* | head -1)
+          case "$f" in *.lz4) lz4 -d -f "$f" out/boot.img ;; *) cp "$f" out/boot.img ;; esac
+          head -c 8 out/boot.img | od -c | head -1
+          cd out
+          tar -H ustar -cf AP_stock_boot.tar boot.img
+          md5sum -t AP_stock_boot.tar >> AP_stock_boot.tar
+          mv AP_stock_boot.tar AP_stock_boot.tar.md5
+          mv boot.img stock-boot.img
+          cp ../version.txt .
+          sha256sum * > SHA256SUMS
+      - name: Publish
+        run: |
+          v=$(cut -d/ -f1 version.txt | tr -d '\n')
+          gh release create "stock-boot-$v" out/* -R ${{ github.repository }} \
+            --title "Stock A72 boot.img ($v), Odin AP file to restore Android" \
+            --notes "Odin: AP = AP_stock_boot.tar.md5. Matches firmware $(cat version.txt). Samsung's signed file: keep private."
