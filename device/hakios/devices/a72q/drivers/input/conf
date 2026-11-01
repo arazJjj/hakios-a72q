@@ -1,0 +1,6 @@
+# devices/a72q/drivers/input/conf: the A72's own input drivers (docs/drivers-config.md).
+
+driver STMFTS
+	file    bsd/dev/hakios.stmfts.c
+	help    the Galaxy A72's touch screen: an STMicro FTS5CU56A on I2C (QUP wrap 1 engine 1, address 0x49),
+	help    polled (touchscreen=1). Written, not yet seen working on a phone

@@ -1,0 +1,20 @@
+HakiOS on the A72 with Odin (no Android fastboot)
+
+Samsung's bootloader only speaks Odin, but HakiOS's own U-Boot has a fastboot gadget.
+So Odin is needed once, for the boot image; everything after goes over U-Boot's fastboot.
+
+1. On your computer, build the iOS system from your own IPSW:
+     tools/fetch-ipsw.sh            (iPhone10,3, iOS 16.5 20F66, via ipsw.me, SHA-1 checked)
+2. Pack the boot image for Odin:
+     tools/odin-pack.sh             -> AP_hakios_a72q.tar.md5
+3. Phone in Download mode (Vol Up + Vol Down, plug USB). Odin: AP = that file, Auto Reboot off, Start.
+4. Boot it holding Volume Down: the HakiOS developer menu. Pick "Enable fastboot mode".
+   The PC now sees a fastboot device. That is U-Boot, not Samsung, so these work:
+     fastboot stage x.hkub
+     fastboot oem run:hakios load fastboot
+     fastboot continue
+   and the darwin tools (userdata-carve.py, darwin-write.py) over the same link.
+5. Windows: install the Android USB driver (Google USB driver) for U-Boot's fastboot device;
+   Samsung's driver only covers Odin.
+
+To go back to stock: flash Samsung's firmware (BL, AP, CP, CSC) in Odin.

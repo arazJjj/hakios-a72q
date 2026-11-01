@@ -1,0 +1,135 @@
+diff --git a/qemu/run.sh b/qemu/run.sh
+index c05e8a0..49631c6 100755
+--- a/qemu/run.sh
++++ b/qemu/run.sh
+@@ -40,4 +40,4 @@ timeout "$T" qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a76 -smp ${QE
+   -drive if=pflash,format=raw,file=vars.fd \
+   -drive file=fat:rw:esp,format=raw,if=virtio \
+   "${PAYLOAD_DEVICE[@]}" \
+-  -display none -serial stdio -monitor none -no-reboot "$@" 2>&1
++  -display none -serial ${QEMU_SERIAL:-stdio} -monitor none -no-reboot "$@" 2>&1
+diff --git a/xnuloader/loader.c b/xnuloader/loader.c
+index 422f9d3..ce93818 100644
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -588,6 +588,17 @@ static const struct platform platform_redwood = {
+ 	.small_cores = 0x0f,
+ };
+ 
++/*
++ * The Samsung Galaxy A72 (a72q, SM7125): the same GIC-500 addresses as redwood (sc7180.dtsi), 6 Cortex-A55 (0-5) and
++ * 2 Cortex-A76 (6-7) numbered in MPIDR's second affinity field. Its U-Boot leaves the framebuffer at 0x9C000000.
++ */
++static const struct platform platform_a72q = {
++	.name = "a72q", .io_base = 0x00400000, .io_size = 0x3FC00000,
++	.gic_dist = 0x17A00000, .gic_redist = 0x17A60000, .uart = 0, .log_other_cpu = 1,
++	.cores = 8, .core_shift = 8,
++	.small_cores = 0x3f,
++};
++
+ /* ------------------------------------------------------------------------ */
+ 
+ static void
+@@ -2565,6 +2576,7 @@ struct payload_info {
+ 	uint64_t resident_rd;           /* size of a root image the host put at the resident address */
+ 	const uint8_t *resident;        /* ... or one the payload carries, which the loader puts there itself */
+ 	uint32_t resident_size;
++	uint64_t resflash;              /* a72q: size of a root image the loader reads from the start of "darwin" */
+ 	const char *kernel_version;     /* kernel.ver: the version of the kernel in this payload (tools/kernel-version.py) */
+ 	int usb_mode;
+ };
+@@ -2592,6 +2604,58 @@ payload_walk_size(uint32_t header_size)
+ 	return header_size < most ? header_size : most;
+ }
+ 
++/* a72q: read SIZE bytes from the start of the partition named darwin into DEST (the resident image). */
++static int
++resflash_load(void *dest, uint64_t size)
++{
++	static const efi_guid part_guid = EFI_PARTITION_INFO_GUID;
++	static const efi_guid blk_guid = EFI_BLOCK_IO_GUID;
++	efi_handle *handles;
++	uint64_t count;
++	int done = 0;
++
++	if (EFI_ERROR(BS->locate_handle_buffer(ByProtocol, &part_guid, NULL, &count, &handles))) {
++		print("resflash: no partitions\n");
++		return 0;
++	}
++	for (uint64_t i = 0; i < count && !done; i++) {
++		efi_partition_info *info;
++		efi_block_io *bio;
++		char name[36];
++
++		if (EFI_ERROR(BS->handle_protocol(handles[i], &part_guid, (void **)&info)) || info->type != 2 ||
++		    EFI_ERROR(BS->handle_protocol(handles[i], &blk_guid, (void **)&bio)) || bio->media->block_size == 0) {
++			continue;
++		}
++		ufs_name(info, name, sizeof(name));
++		if (!(name[0] == 'd' && name[1] == 'a' && name[2] == 'r' && name[3] == 'w' && name[4] == 'i' &&
++		    name[5] == 'n' && name[6] == 0)) {
++			continue;
++		}
++		uint64_t bs = bio->media->block_size, total = (size + bs - 1) / bs * bs, off = 0;
++		if (total / bs > bio->media->last_block + 1) {
++			print("resflash: %x bytes do not fit in darwin\n", size);
++			break;
++		}
++		print("resflash: reading %x bytes of darwin (blocks of %d)\n", total, bs);
++		while (off < total) {
++			uint64_t n = total - off > 0x4000000ULL ? 0x4000000ULL : total - off;
++			efi_status s = bio->read_blocks(bio, bio->media->media_id, off / bs, n, (uint8_t *)dest + off);
++			if (EFI_ERROR(s)) {
++				print("resflash: read at %x failed\n", off);
++				break;
++			}
++			off += n;
++		}
++		done = off >= total;
++	}
++	BS->free_pool(handles);
++	if (!done) {
++		print("resflash: no usable partition darwin\n");
++	}
++	return done;
++}
++
+ static int
+ parse_payload(struct payload_info *pi, int verbose)
+ {
+@@ -2638,6 +2702,8 @@ parse_payload(struct payload_info *pi, int verbose)
+ 		} else if (str_eq(e->name, "resident")) {
+ 			pi->resident = p + sizeof(*e);            /* the image xl ramdisk would send: a boot with no host */
+ 			pi->resident_size = e->size;
++		} else if (str_eq(e->name, "resflash")) {
++			pi->resflash = parse_number(text, 16);    /* a72q: read the resident image from partition darwin */
+ 		} else if (str_eq(e->name, "rdres")) {
+ 			pi->resident_rd = parse_number(text, 16); /* e.g. loaded there by QEMU; see RESIDENT_RD_OFFSET */
+ 		} else if (str_eq(e->name, "kernel.ver")) {
+@@ -2931,6 +2997,17 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
+ 	 * The payload's own resident image (a boot from the phone's boot partition, where no host sends one): put where
+ 	 * "oem ramdisk" puts it, once per run, and taken as if it had been sent.
+ 	 */
++	if (pi.resflash != 0) {
++		if (win_size <= RESIDENT_RD_OFFSET + RESIDENT_RD_RESERVE ||
++		    pi.resflash > win_size - RESIDENT_RD_OFFSET - RESIDENT_RD_RESERVE) {
++			print("resflash %x does not fit in the memory window\n", pi.resflash);
++			return 0;
++		}
++		if (!resflash_load((void *)(phys_base + RESIDENT_RD_OFFSET), pi.resflash)) {
++			return 0;
++		}
++		resident_rd_size = pi.resflash;
++	}
+ 	if (pi.resident != NULL) {
+ 		if (win_size <= RESIDENT_RD_OFFSET + RESIDENT_RD_RESERVE ||
+ 		    pi.resident_size > win_size - RESIDENT_RD_OFFSET - RESIDENT_RD_RESERVE) {
+@@ -4345,6 +4422,8 @@ efi_main(efi_handle image, efi_system_table *st)
+ 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
+ 		if (SCREEN.base == 0xE1000000ULL) {
+ 			PLAT = &platform_redwood;
++		} else if (SCREEN.base == 0x9C000000ULL) {
++			PLAT = &platform_a72q;  /* a real phone: QEMU's fw_cfg (ramfb_phone_screen) is not there to touch */
+ 		} else {
+ 			ramfb_phone_screen();
+ 		}

@@ -1,0 +1,6 @@
+{
+  "name": "HakiOS a72q build",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "hostRequirements": { "storage": "32gb" },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y 7zip clang lld lz4 python3 git make curl zstd"
+}
