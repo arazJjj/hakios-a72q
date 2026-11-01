@@ -1,0 +1,80 @@
+# Boot the iOS 16.5 user space of a private ios-* release under QEMU (the prebuilt common kernel, the loader built with the
+# iPhone10,3 identity from Apple's DeviceTree, fetched out of the IPSW by HTTP range) and take a screenshot every 20 s:
+# the boot logo first, then setup or the home screen. Publishes the pictures and the log to a private release.
+name: qemu-preview
+on:
+  workflow_dispatch:
+    inputs:
+      ios_tag: { description: "release with root.apfs.zst + system.apfs.zst.part*", default: "ios-20F66-run2" }
+      secs: { description: "seconds to run", default: "1500" }
+jobs:
+  qemu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Refuse on a public repository
+        run: |
+          vis=$(gh api repos/${{ github.repository }} --jq .visibility)
+          [ "$vis" = private ] || { echo "repository is $vis"; exit 1; }
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm qemu-efi-aarch64 clang lld llvm zstd python3-pip imagemagick >/dev/null
+          pip install --break-system-packages -q remotezip
+          qemu-system-aarch64 --version | head -1
+      - name: Common tree
+        run: git clone -q --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hk
+      - name: The loader with the iPhone10,3 identity (DeviceTree out of Apple's IPSW, by range)
+        run: |
+          cd hk
+          url=$(curl -s https://api.ipsw.me/v4/ipsw/iPhone10,3/20F66 | python3 -c 'import json,sys;print(json.load(sys.stdin)["url"])')
+          echo "$url"
+          python3 - "$url" <<'PY'
+          import sys, remotezip
+          with remotezip.RemoteZip(sys.argv[1]) as z:
+              name = [n for n in z.namelist() if n.endswith("DeviceTree.d22ap.im4p")][0]
+              open("sysimage/DeviceTree.d22ap.im4p", "wb").write(z.read(name))
+          PY
+          xnuloader/mkidentity.sh sysimage/DeviceTree.d22ap.im4p
+          xnuloader/build.sh
+          ls -la xnuloader/loader.efi
+      - name: iOS images from ${{ inputs.ios_tag }}
+        run: |
+          gh release download "${{ inputs.ios_tag }}" -R ${{ github.repository }} -D dl -p 'root.apfs.zst' -p 'system.apfs.zst*'
+          zstd -q -d dl/root.apfs.zst -o hk/userland/root.apfs
+          cat dl/system.apfs.zst.part* | zstd -q -d -o hk/userland/system.apfs
+          rm -rf dl; ls -la hk/userland/*.apfs; df -h . | tail -1
+      - name: Boot and take screenshots
+        run: |
+          cd hk; mkdir -p logs shots
+          secs=${{ inputs.secs }}
+          (qemu/run-darwin.sh $secs -display none > logs/qemu.log 2>&1 &)
+          sleep 15
+          n=0
+          while [ $n -lt $((secs / 20 + 2)) ]; do
+            t=$((15 + n * 20)); f=shots/t$(printf %04d $t).png
+            qemu/screendump.sh "$PWD/$f" 2>/dev/null || true
+            n=$((n + 1)); sleep 20
+            pgrep -f qemu-system-aarch64 >/dev/null || break
+          done
+          ls shots | wc -l
+          grep -nE "SpringBoard|Setup|backboardd|panic" logs/qemu.log | head -40 || true
+      - name: Pick distinct pictures and publish
+        if: always()
+        run: |
+          cd hk/shots || exit 0
+          prev=""; mkdir -p ../pick
+          for f in $(ls *.png 2>/dev/null); do
+            h=$(convert "$f" -resize 64x64! -colorspace gray -format %# info: 2>/dev/null)
+            [ "$h" = "$prev" ] || cp "$f" ../pick/
+            prev=$h
+          done
+          cd ..; ls pick | head -50
+          tar czf shots-all.tar.gz shots; gzip -c logs/qemu.log > qemu.log.gz
+          tag="qemu-preview-${{ github.run_id }}"
+          gh release create "$tag" pick/*.png shots-all.tar.gz qemu.log.gz -R ${{ github.repository }} \
+            --title "QEMU preview of ${{ inputs.ios_tag }}" --notes "Screenshots every 20 s (distinct ones attached), QEMU log."
