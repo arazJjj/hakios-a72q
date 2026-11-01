@@ -1,0 +1,56 @@
+# Build the HakiOS kernel for the A72 (a72q_defconfig) with this repository's device directory: the touch driver
+# (drivers/input) and the Adreno 618 overlay (overlay/drivers/gpu). Publishes hakios-kernel to a private release.
+# Put it as hakios-kernel in your HakiOS folder (next to xl); `xl run` sends it instead of prebuilt/hakios-kernel.
+name: build-kernel
+on:
+  workflow_dispatch:
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      THEOS: /home/runner/theos
+    steps:
+      - name: Refuse on a public repository
+        run: |
+          vis=$(gh api repos/${{ github.repository }} --jq .visibility)
+          [ "$vis" = private ] || { echo "repository is $vis"; exit 1; }
+      - uses: actions/checkout@v4
+      - name: Tools and theos (Linux toolchain, iPhoneOS16.5 SDK)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git curl xz-utils make clang lld llvm flex bison m4 perl python3 autoconf automake libtool \
+            libssl-dev uuid-dev libxml2-dev zlib1g-dev libbsd-dev pkg-config cmake ninja-build >/dev/null
+          git clone -q --recursive --depth 1 https://github.com/theos/theos.git $THEOS
+          mkdir -p $THEOS/toolchain/linux/iphone
+          curl -sL https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz | tar -xJ -C $THEOS/toolchain/linux/iphone --strip-components=1
+          ls $THEOS/toolchain/linux/iphone/bin | head -30
+          git clone -q --depth 1 https://github.com/theos/sdks.git /tmp/sdks
+          ls /tmp/sdks
+          cp -a /tmp/sdks/iPhoneOS16.5.sdk $THEOS/sdks/
+      - name: HakiOS common tree with the A72 device
+        run: |
+          git clone -q --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hk
+          rm -rf hk/devices/a72q && cp -a device/hakios/devices/a72q hk/devices/a72q
+          cp hk/devices/a72q/overlay/drivers/gpu/hakios.adreno.c hk/drivers/gpu/hakios.adreno.c
+          cd hk && git log -1 --format='common tree %h %cs'
+      - name: Build
+        run: |
+          cd hk
+          make DEVICE=a72q a72q_defconfig
+          make DEVICE=a72q kernel JOBS=$(nproc) 2>&1 | tee ../kernel-build.log | tail -150
+          ls -la hakios-kernel
+      - name: Log on failure
+        if: failure()
+        run: |
+          grep -nE "error:|Error [0-9]|\*\*\*|not found|No such file" kernel-build.log | head -120 || true
+      - name: Publish
+        run: |
+          cd hk
+          sha256sum hakios-kernel > SHA256SUMS
+          tag="kernel-a72q-$(git -C .. rev-parse --short HEAD)"
+          gh release create "$tag" hakios-kernel SHA256SUMS ../kernel-build.log -R ${{ github.repository }} \
+            --title "A72 kernel ($tag)" --notes "Touch (stmfts v2) and Adreno 618 first stage (adreno=1..9). Untested. Save as hakios-kernel next to xl."
